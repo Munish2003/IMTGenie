@@ -255,6 +255,11 @@
          */
         async _sendMessageToBackend(message, sessionId) {
 
+            // SAFETY: Reset stale state from any previous response.
+            // If the typewriter loop failed to null this, the next response's
+            // tokens would silently append to the old bubble instead of creating a new one.
+            this.uiManager.currentAIMessageElement = null;
+
             // Add user message to UI FIRST
             this.uiManager.addUserMessage(message);
             this.uiManager.clearInput();
@@ -299,11 +304,24 @@
                     // CRITICAL: Set callback BEFORE finishAIMessage(), because
                     // finishAIMessage → _flushQueue checks onQueueDrained.
                     // If set after, the callback is missed when tab is hidden.
-                    this.uiManager.onQueueDrained = () => {
+                    let inputRestored = false;
+                    const restoreInput = () => {
+                        if (inputRestored) return;
+                        inputRestored = true;
                         this.uiManager.enableInput();
                         this.uiManager.focusInput();
                     };
+                    this.uiManager.onQueueDrained = restoreInput;
                     this.uiManager.finishAIMessage();
+
+                    // SAFETY NET: If onQueueDrained never fires (rare race condition),
+                    // force-enable input after 5 seconds so the user isn't stuck.
+                    setTimeout(() => {
+                        if (!inputRestored) {
+                            console.warn('[SAFETY] onQueueDrained did not fire in 5s — force-enabling input');
+                            restoreInput();
+                        }
+                    }, 5000);
                 },
 
                 onError: (error) => {
